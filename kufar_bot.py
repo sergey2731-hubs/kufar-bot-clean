@@ -1,4 +1,4 @@
-# kufar_bot.py - ОБЛЕГЧЕННАЯ ВЕРСИЯ БЕЗ PANDAS
+# kufar_bot.py - ПОЛНАЯ ВЕРСИЯ С ОБРАБОТКОЙ ИЗОБРАЖЕНИЙ
 import os
 import re
 import json
@@ -38,7 +38,7 @@ class KufarSalesManager:
             if HF_TOKEN:
                 client = OpenAI(
                     base_url="https://router.huggingface.co/hf-inference/v1",
-                    api_key=HF_TOKEN,
+                    api_url=HF_TOKEN,
                 )
                 print("✅ HF API подключен")
                 return client

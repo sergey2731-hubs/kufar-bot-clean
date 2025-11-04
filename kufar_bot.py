@@ -1,4 +1,4 @@
-# kufar_bot.py - ПОЛНАЯ ВЕРСИЯ ДЛЯ ПК
+# kufar_bot.py - ВЕРСИЯ С API КЛЮЧАМИ
 import os
 import re
 import json
@@ -7,16 +7,12 @@ import pandas as pd
 from datetime import datetime
 import nest_asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, MessageHandler, filters, ContextTypes, CallbackQueryHandler
+from telegram.ext import Application, MessageHandler, filters, ContextTypes, CallbackQueryHandler, CommandHandler
 from openai import OpenAI
-from dotenv import load_dotenv
 
-# Загружаем переменные окружения
-load_dotenv()
-
-# 🔑 НАСТРОЙКИ ИЗ ФАЙЛА .env
-BOT_TOKEN = os.environ.get('BOT_TOKEN')
-HF_TOKEN = os.environ.get('HF_TOKEN')
+# 🔑 API КЛЮЧИ
+BOT_TOKEN = "8521153944:AAEMBg2JGMM6fNleRBIOmLSrKOWqBeWoGP0"
+HF_TOKEN = "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"
 
 nest_asyncio.apply()
 
@@ -34,14 +30,14 @@ class KufarSalesManager:
         self.last_order_id = 0
         
         self.initialize_database()
-        print("✅ Система управления с ИИ запущена на ПК!")
+        print("✅ Система управления с ИИ запущена!")
 
     def setup_hf_client(self):
         """Настраивает HF клиент"""
         try:
             if HF_TOKEN:
                 client = OpenAI(
-                    base_url="https://router.huggingface.co/v1",
+                    base_url="https://router.huggingface.co/hf-inference/v1",
                     api_key=HF_TOKEN,
                 )
                 print("✅ HF API подключен")
@@ -102,7 +98,6 @@ class KufarSalesManager:
             [InlineKeyboardButton("🔍 Найти заказ", callback_data="search_order")],
             [InlineKeyboardButton("📦 Управление остатками", callback_data="manage_stock")],
             [InlineKeyboardButton("📈 Статистика", callback_data="show_stats")],
-            [InlineKeyboardButton("🤖 Тест ИИ", callback_data="test_ai")],
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -122,7 +117,6 @@ class KufarSalesManager:
             "search_order": self.start_search_order,
             "manage_stock": self.show_stock_management,
             "show_stats": self.show_statistics,
-            "test_ai": self.test_ai,
         }
         
         if query.data in handlers:
@@ -167,7 +161,8 @@ class KufarSalesManager:
                 print("❌ Анализ не удался")
                 await update.message.reply_text(
                     "❌ Не удалось извлечь данные из скриншота.\n\n"
-                    "✅ Используй ручной ввод заказа через меню!"
+                    "📝 **Отправь текст из скриншота вручную:**\n"
+                    "Просто скопируй и пришли текст из чата Kufar, я его проанализирую!"
                 )
             
         except Exception as e:
@@ -184,44 +179,60 @@ class KufarSalesManager:
             base64_image = base64.b64encode(image_data).decode('utf-8')
             print("🖼️ Изображение закодировано в base64")
             
-            prompt = """Проанализируй скриншот чата Kufar и извлеки данные:
-- ФИО покупателя
-- Телефон 
-- Адрес доставки
-- Название товара
-- Сумму заказа
-- Никнейм пользователя
+            prompt = """Analyze this Kufar chat screenshot and extract the following information:
+- Customer full name (ФИО)
+- Phone number 
+- Delivery address
+- Product name
+- Order amount
+- Username
 
-Если данных нет - пиши "null"
+If some data is missing, write "null"
 
-Верни JSON: {"name": "...", "phone": "...", "address": "...", "product": "...", "amount": "...", "username": "..."}"""
+Return ONLY JSON format:
+{"name": "...", "phone": "...", "address": "...", "product": "...", "amount": "...", "username": "..."}"""
 
-            completion = self.hf_client.chat.completions.create(
-                model="meta-llama/Meta-Llama-3.1-8B-Instruct",
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": prompt},
-                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
-                        ]
-                    }
-                ],
-                max_tokens=1000,
-                temperature=0.1
-            )
+            # Пробуем модели которые поддерживают изображения
+            models_to_try = [
+                "llava-hf/llava-1.5-7b-hf",
+                "microsoft/DialoGPT-large", 
+                "HuggingFaceH4/zephyr-7b-beta"
+            ]
             
-            response_text = completion.choices[0].message.content
-            print(f"📨 Ответ от ИИ: {response_text}")
+            for model in models_to_try:
+                try:
+                    print(f"🔄 Пробую модель: {model}")
+                    completion = self.hf_client.chat.completions.create(
+                        model=model,
+                        messages=[
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": prompt},
+                                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
+                                ]
+                            }
+                        ],
+                        max_tokens=1000,
+                        temperature=0.1
+                    )
+                    
+                    response_text = completion.choices[0].message.content
+                    print(f"📨 Ответ от ИИ ({model}): {response_text}")
+                    
+                    # Парсим JSON из ответа
+                    json_match = re.search(r'\{[^}]+\}', response_text)
+                    if json_match:
+                        result = json.loads(json_match.group())
+                        print(f"✅ Успешно распарсено с моделью {model}")
+                        return result
+                        
+                except Exception as model_error:
+                    print(f"❌ Ошибка с моделью {model}: {model_error}")
+                    continue
             
-            # Парсим JSON из ответа
-            json_match = re.search(r'\{[^}]+\}', response_text)
-            if json_match:
-                result = json.loads(json_match.group())
-                return result
-            else:
-                print("❌ Не удалось найти JSON в ответе")
-                return None
+            print("❌ Все модели не сработали")
+            return None
                 
         except Exception as e:
             print(f"❌ Ошибка анализа ИИ: {e}")
@@ -442,7 +453,92 @@ class KufarSalesManager:
         
         return response
 
-    # === ДРУГИЕ ФУНКЦИИ (экспорт, поиск, статистика и т.д.) ===
+    # === АНАЛИЗ ТЕКСТА ===
+    async def analyze_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+        """Анализирует текстовые сообщения с данными заказа"""
+        print(f"📝 Анализирую текст: {text}")
+        
+        # Парсим текст
+        parsed_data = self.parse_text_data(text)
+        
+        print(f"🎯 Результат парсинга: {parsed_data}")
+        
+        if self.validate_extracted_data(parsed_data):
+            await update.message.reply_text("✅ Данные распознаны! Создаю заказ...")
+            
+            # Обработка заказа
+            order_data = await self.process_order_data(parsed_data, "")
+            
+            # Сохранение заказа
+            order_saved = self.save_order_to_db(order_data)
+            
+            # Обновление баз
+            self.update_products_db(order_data['Товар'], order_data['Сумма'])
+            self.update_customers_db(order_data)
+            
+            response = self.format_order_response(order_data, order_saved)
+            await update.message.reply_text(response)
+        else:
+            await update.message.reply_text(
+                "❌ Не удалось распознать данные в тексте.\n\n"
+                "📋 **Вот как правильно отправить данные:**\n"
+                "• Просто пришли текст из чата Kufar (я сам всё найду)\n"
+                "• Или используй формат для ручного ввода через меню"
+            )
+
+    def parse_text_data(self, text):
+        """Парсит текст и извлекает данные"""
+        parsed = {
+            'name': '',
+            'phone': '',
+            'address': '',
+            'product': '',
+            'amount': '',
+            'username': ''
+        }
+        
+        lines = text.split('\n')
+        
+        # Поиск телефона
+        phone_pattern = r'[\+]?[375]{3}[\s\-]?[\(]?\d{2}[\)]?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}'
+        for line in lines:
+            phone_match = re.search(phone_pattern, line)
+            if phone_match:
+                parsed['phone'] = phone_match.group()
+                break
+        
+        # Поиск цены
+        price_pattern = r'(\d+)[\s]*[рр]'
+        for line in lines:
+            price_match = re.search(price_pattern, line)
+            if price_match:
+                parsed['amount'] = f"{price_match.group(1)} р."
+                break
+        
+        # Поиск ФИО
+        for line in lines:
+            line_clean = line.strip()
+            words = line_clean.split()
+            if 2 <= len(words) <= 3:
+                if all(word and word[0].isupper() for word in words):
+                    excluded_words = ['отделение', 'европочта', 'почта', 'принял', 'отправка', 'г.', 'ул.']
+                    if not any(excl in line_clean.lower() for excl in excluded_words):
+                        if not any(word.isdigit() for word in words):
+                            parsed['name'] = line_clean
+                            break
+        
+        # Поиск адреса
+        address_indicators = ['г.', 'ул.', 'отделение', 'область', 'район']
+        for line in lines:
+            line_lower = line.lower()
+            if any(indicator in line_lower for indicator in address_indicators):
+                if len(line) > 10:
+                    parsed['address'] = line.strip()
+                    break
+        
+        return parsed
+
+    # === ДРУГИЕ ФУНКЦИИ ===
     async def export_orders(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Выгружает заказы в файл"""
         try:
@@ -651,19 +747,6 @@ class KufarSalesManager:
             
         return stats
 
-    async def test_ai(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Тестирует ИИ"""
-        await update.callback_query.message.reply_text(
-            "🤖 **ИИ СИСТЕМА АКТИВНА**\n\n"
-            "Отправь скриншот чата Kufar для автоматического анализа:\n"
-            "• ФИО покупателя\n"
-            "• Телефон\n" 
-            "• Адрес доставки\n"
-            "• Товар\n"
-            "• Сумму заказа\n\n"
-            "ИИ работает на полную мощность! 🚀"
-        )
-
     # === ОБРАБОТКА ТЕКСТА ===
     async def handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обрабатывает текстовые сообщения"""
@@ -686,10 +769,15 @@ class KufarSalesManager:
         elif text == '/start':
             await self.start_command(update, context)
         else:
-            await update.message.reply_text("Отправь скриншот или /menu для меню")
+            # Анализируем текст как данные заказа
+            await self.analyze_text_message(update, context, text)
 
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        await update.message.reply_text("🤖 **SKUFAR PARSER** запущен на ПК!\n\nПолный доступ к ИИ анализу скриншотов! 🚀")
+        await update.message.reply_text(
+            "🤖 **SKUFAR PARSER** запущен!\n\n"
+            "📸 Отправь скриншот чата Kufar для автоматического анализа\n"
+            "📝 Или просто пришли текст из чата - я его проанализирую!"
+        )
         await self.show_main_menu(update, context)
 
 # ЗАПУСК БОТА
@@ -697,17 +785,17 @@ def main():
     application = Application.builder().token(BOT_TOKEN).build()
     bot_manager = KufarSalesManager()
     
-    application.add_handler(MessageHandler(filters.COMMAND & filters.Regex("start"), bot_manager.start_command))
-    application.add_handler(MessageHandler(filters.COMMAND & filters.Regex("menu"), bot_manager.start_command))
-    application.add_handler(MessageHandler(filters.COMMAND & filters.Regex("cancel"), bot_manager.handle_text))
+    # Регистрируем обработчики
+    application.add_handler(CommandHandler("start", bot_manager.start_command))
+    application.add_handler(CommandHandler("menu", bot_manager.show_main_menu))
     application.add_handler(CallbackQueryHandler(bot_manager.handle_callback))
     application.add_handler(MessageHandler(filters.PHOTO, bot_manager.handle_photo))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot_manager.handle_text))
     
-    print("🚀 Бот запускается на ПК...")
-    print("🤖 Полный доступ к ИИ API!")
-    print("📊 Все функции активны")
-    print("🔍 Ожидаю команды /start в Telegram...")
+    print("🚀 Бот запускается...")
+    print("🤖 ИИ система активна!")
+    print("📊 Все функции готовы")
+    print("🔍 Ожидаю команды...")
     
     application.run_polling()
 

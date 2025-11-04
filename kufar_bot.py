@@ -1,9 +1,9 @@
-# kufar_bot.py - ВЕРСИЯ С API КЛЮЧАМИ
+# kufar_bot.py - ОБЛЕГЧЕННАЯ ВЕРСИЯ БЕЗ PANDAS
 import os
 import re
 import json
 import base64
-import pandas as pd
+import csv
 from datetime import datetime
 import nest_asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -11,8 +11,8 @@ from telegram.ext import Application, MessageHandler, filters, ContextTypes, Cal
 from openai import OpenAI
 
 # 🔑 API КЛЮЧИ
-BOT_TOKEN = "8521153944:AAEMBg2JGMM6fNleRBIOmLSrKOWqBeWoGP0"
-HF_TOKEN = "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"
+BOT_TOKEN = os.environ.get('BOT_TOKEN', "8521153944:AAEMBg2JGMM6fNleRBIOmLSrKOWqBeWoGP0")
+HF_TOKEN = os.environ.get('HF_TOKEN', "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")
 
 nest_asyncio.apply()
 
@@ -73,17 +73,20 @@ class KufarSalesManager:
     def init_csv(self, filename, columns):
         """Инициализирует CSV файл если его нет"""
         if not os.path.exists(filename):
-            df = pd.DataFrame(columns=columns)
-            df.to_csv(filename, index=False, encoding='utf-8-sig')
+            with open(filename, 'w', newline='', encoding='utf-8-sig') as f:
+                writer = csv.writer(f)
+                writer.writerow(columns)
             print(f"✅ Создан файл {filename}")
 
     def get_last_order_id(self):
         """Получает последний ID заказа"""
         try:
             if os.path.exists(self.orders_file):
-                df = pd.read_csv(self.orders_file)
-                if not df.empty and 'ID' in df.columns:
-                    return df['ID'].max()
+                with open(self.orders_file, 'r', encoding='utf-8-sig') as f:
+                    reader = csv.DictReader(f)
+                    rows = list(reader)
+                    if rows:
+                        return max(int(row['ID']) for row in rows if row['ID'].isdigit())
             return 0
         except Exception as e:
             print(f"❌ Ошибка получения последнего ID: {e}")
@@ -342,17 +345,19 @@ Return ONLY JSON format:
     def save_order_to_db(self, order_data):
         """Сохраняет заказ в базу"""
         try:
-            if os.path.exists(self.orders_file):
-                df = pd.read_csv(self.orders_file)
-            else:
-                df = pd.DataFrame(columns=[
+            file_exists = os.path.exists(self.orders_file)
+            
+            with open(self.orders_file, 'a', newline='', encoding='utf-8-sig') as f:
+                writer = csv.DictWriter(f, fieldnames=[
                     'ID', 'Номер_заказа', 'Дата_заказа', 'ФИО', 'Телефон', 'Адрес',
                     'Тип_доставки', 'Товар', 'Сумма', 'Примечание', 'Никнейм',
                     'Статус', 'Цена_из_подписи', 'Трек_номер'
                 ])
-            
-            df = pd.concat([df, pd.DataFrame([order_data])], ignore_index=True)
-            df.to_csv(self.orders_file, index=False, encoding='utf-8-sig')
+                
+                if not file_exists:
+                    writer.writeheader()
+                
+                writer.writerow(order_data)
             
             print(f"✅ Заказ #{order_data['Номер_заказа']} сохранен в базу")
             return True
@@ -367,30 +372,41 @@ Return ONLY JSON format:
             if not product_name or product_name == 'null':
                 return
                 
-            if os.path.exists(self.products_file):
-                df = pd.read_csv(self.products_file)
-            else:
-                df = pd.DataFrame(columns=['ID', 'Название', 'Количество', 'Последняя_цена', 'Количество_продаж'])
+            products = []
+            file_exists = os.path.exists(self.products_file)
             
-            if not df.empty and product_name in df['Название'].values:
-                idx = df[df['Название'] == product_name].index[0]
-                current_qty = df.at[idx, 'Количество']
-                if pd.notna(current_qty) and current_qty > 0:
-                    df.at[idx, 'Количество'] = current_qty - 1
-                df.at[idx, 'Количество_продаж'] += 1
-                df.at[idx, 'Последняя_цена'] = price
-            else:
-                new_id = df['ID'].max() + 1 if not df.empty else 1
+            if file_exists:
+                with open(self.products_file, 'r', encoding='utf-8-sig') as f:
+                    reader = csv.DictReader(f)
+                    products = list(reader)
+            
+            product_found = False
+            for product in products:
+                if product['Название'] == product_name:
+                    current_qty = int(product['Количество']) if product['Количество'].isdigit() else 0
+                    if current_qty > 0:
+                        product['Количество'] = str(current_qty - 1)
+                    product['Количество_продаж'] = str(int(product['Количество_продаж']) + 1)
+                    product['Последняя_цена'] = price
+                    product_found = True
+                    break
+            
+            if not product_found:
+                new_id = max([int(p['ID']) for p in products]) + 1 if products else 1
                 new_product = {
-                    'ID': new_id,
+                    'ID': str(new_id),
                     'Название': product_name,
-                    'Количество': 0,
+                    'Количество': '0',
                     'Последняя_цена': price,
-                    'Количество_продаж': 1
+                    'Количество_продаж': '1'
                 }
-                df = pd.concat([df, pd.DataFrame([new_product])], ignore_index=True)
+                products.append(new_product)
             
-            df.to_csv(self.products_file, index=False, encoding='utf-8-sig')
+            with open(self.products_file, 'w', newline='', encoding='utf-8-sig') as f:
+                writer = csv.DictWriter(f, fieldnames=['ID', 'Название', 'Количество', 'Последняя_цена', 'Количество_продаж'])
+                writer.writeheader()
+                writer.writerows(products)
+            
             print(f"✅ База товаров обновлена: {product_name}")
             
         except Exception as e:
@@ -399,10 +415,13 @@ Return ONLY JSON format:
     def update_customers_db(self, order_data):
         """Обновляет базу клиентов"""
         try:
-            if os.path.exists(self.customers_file):
-                df = pd.read_csv(self.customers_file)
-            else:
-                df = pd.DataFrame(columns=['Телефон', 'ФИО', 'Количество_заказов', 'Общая_сумма', 'Последний_заказ'])
+            customers = []
+            file_exists = os.path.exists(self.customers_file)
+            
+            if file_exists:
+                with open(self.customers_file, 'r', encoding='utf-8-sig') as f:
+                    reader = csv.DictReader(f)
+                    customers = list(reader)
             
             phone = order_data['Телефон']
             if not phone or phone == 'null':
@@ -414,22 +433,30 @@ Return ONLY JSON format:
                 if numbers:
                     amount = int(numbers[0])
             
-            if not df.empty and phone in df['Телефон'].values:
-                idx = df[df['Телефон'] == phone].index[0]
-                df.at[idx, 'Количество_заказов'] += 1
-                df.at[idx, 'Общая_сумма'] += amount
-                df.at[idx, 'Последний_заказ'] = order_data['Дата_заказа']
-            else:
+            customer_found = False
+            for customer in customers:
+                if customer['Телефон'] == phone:
+                    customer['Количество_заказов'] = str(int(customer['Количество_заказов']) + 1)
+                    customer['Общая_сумма'] = str(int(customer['Общая_сумма']) + amount)
+                    customer['Последний_заказ'] = order_data['Дата_заказа']
+                    customer_found = True
+                    break
+            
+            if not customer_found:
                 new_customer = {
                     'Телефон': phone,
                     'ФИО': order_data['ФИО'],
-                    'Количество_заказов': 1,
-                    'Общая_сумма': amount,
+                    'Количество_заказов': '1',
+                    'Общая_сумма': str(amount),
                     'Последний_заказ': order_data['Дата_заказа']
                 }
-                df = pd.concat([df, pd.DataFrame([new_customer])], ignore_index=True)
+                customers.append(new_customer)
             
-            df.to_csv(self.customers_file, index=False, encoding='utf-8-sig')
+            with open(self.customers_file, 'w', newline='', encoding='utf-8-sig') as f:
+                writer = csv.DictWriter(f, fieldnames=['Телефон', 'ФИО', 'Количество_заказов', 'Общая_сумма', 'Последний_заказ'])
+                writer.writeheader()
+                writer.writerows(customers)
+            
             print(f"✅ База клиентов обновлена: {order_data['ФИО']}")
             
         except Exception as e:
@@ -634,27 +661,30 @@ Return ONLY JSON format:
                 await update.message.reply_text("📊 База заказов пуста")
                 return
 
-            df = pd.read_csv(self.orders_file)
-            if df.empty:
+            orders = []
+            with open(self.orders_file, 'r', encoding='utf-8-sig') as f:
+                reader = csv.DictReader(f)
+                orders = list(reader)
+            
+            if not orders:
                 await update.message.reply_text("📊 База заказов пуста")
                 return
 
-            mask = (
-                df['ФИО'].str.contains(search_query, case=False, na=False) |
-                df['Телефон'].str.contains(search_query, case=False, na=False) |
-                df['Номер_заказа'].str.contains(search_query.upper(), case=False, na=False) |
-                df['Товар'].str.contains(search_query, case=False, na=False)
-            )
+            results = []
+            for order in orders:
+                if (search_query.lower() in order['ФИО'].lower() or
+                    search_query in order['Телефон'] or
+                    search_query.upper() in order['Номер_заказа'] or
+                    search_query.lower() in order['Товар'].lower()):
+                    results.append(order)
             
-            results = df[mask]
-            
-            if results.empty:
+            if not results:
                 await update.message.reply_text("❌ Заказы не найдены")
                 return
 
             response = f"🔍 **НАЙДЕНО ЗАКАЗОВ:** {len(results)}\n\n"
             
-            for _, order in results.iterrows():
+            for order in results[:10]:  # Ограничим вывод
                 response += f"""📦 **#{order['Номер_заказа']}** | {order['Дата_заказа']}
 👤 {order['ФИО']} | 📞 {order['Телефон']}
 📦 {order['Товар']} | 💰 {order['Сумма']}
@@ -671,10 +701,13 @@ Return ONLY JSON format:
         """Показывает управление остатками"""
         try:
             if os.path.exists(self.products_file):
-                df = pd.read_csv(self.products_file)
-                if not df.empty:
+                with open(self.products_file, 'r', encoding='utf-8-sig') as f:
+                    reader = csv.DictReader(f)
+                    products = list(reader)
+                
+                if products:
                     response = "📦 **ТОВАРЫ В НАЛИЧИИ:**\n\n"
-                    for _, product in df.iterrows():
+                    for product in products[:15]:  # Ограничим вывод
                         response += f"• {product['Название']}: {product['Количество']} шт. ({product['Количество_продаж']} продаж)\n"
                     await update.callback_query.message.reply_text(response)
                 else:
@@ -715,35 +748,41 @@ Return ONLY JSON format:
         
         try:
             if os.path.exists(self.orders_file):
-                df = pd.read_csv(self.orders_file)
-                if not df.empty:
-                    stats['total_orders'] = len(df)
+                with open(self.orders_file, 'r', encoding='utf-8-sig') as f:
+                    reader = csv.DictReader(f)
+                    orders = list(reader)
+                    stats['total_orders'] = len(orders)
+                    
                     total_revenue = 0
-                    for amount in df['Сумма']:
-                        if pd.notna(amount) and amount:
-                            numbers = re.findall(r'\d+', str(amount))
+                    for order in orders:
+                        if order['Сумма']:
+                            numbers = re.findall(r'\d+', str(order['Сумма']))
                             if numbers:
                                 total_revenue += int(numbers[0])
                     stats['total_revenue'] = total_revenue
             
             if os.path.exists(self.customers_file):
-                df = pd.read_csv(self.customers_file)
-                if not df.empty:
-                    stats['unique_customers'] = len(df)
+                with open(self.customers_file, 'r', encoding='utf-8-sig') as f:
+                    reader = csv.DictReader(f)
+                    customers = list(reader)
+                    stats['unique_customers'] = len(customers)
             
             if os.path.exists(self.products_file):
-                df = pd.read_csv(self.products_file)
-                if not df.empty:
-                    stats['total_products'] = len(df)
-                    top_products = df.nlargest(3, 'Количество_продаж')
-                    if not top_products.empty:
+                with open(self.products_file, 'r', encoding='utf-8-sig') as f:
+                    reader = csv.DictReader(f)
+                    products = list(reader)
+                    stats['total_products'] = len(products)
+                    
+                    if products:
+                        # Сортируем по количеству продаж
+                        sorted_products = sorted(products, key=lambda x: int(x['Количество_продаж']), reverse=True)
+                        top_products = sorted_products[:3]
                         stats['top_products'] = '\n'.join(
-                            [f"• {row['Название']}: {row['Количество_продаж']} продаж" 
-                             for _, row in top_products.iterrows()]
+                            [f"• {p['Название']}: {p['Количество_продаж']} продаж" for p in top_products]
                         )
                     
-        except:
-            pass
+        except Exception as e:
+            print(f"❌ Ошибка расчета статистики: {e}")
             
         return stats
 

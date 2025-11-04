@@ -1,4 +1,4 @@
-# kufar_bot.py - ПОЛНАЯ ВЕРСИЯ С ОБРАБОТКОЙ ИЗОБРАЖЕНИЙ
+# kufar_bot.py - ОБНОВЛЕННАЯ ВЕРСИЯ БЕЗ PILLOW
 import os
 import re
 import json
@@ -38,7 +38,7 @@ class KufarSalesManager:
             if HF_TOKEN:
                 client = OpenAI(
                     base_url="https://router.huggingface.co/hf-inference/v1",
-                    api_url=HF_TOKEN,
+                    api_key=HF_TOKEN,
                 )
                 print("✅ HF API подключен")
                 return client
@@ -125,116 +125,124 @@ class KufarSalesManager:
         if query.data in handlers:
             await handlers[query.data](update, context)
 
-    # === ОБРАБОТКА СКРИНШОТОВ С ИИ ===
+    # === ОБРАБОТКА СКРИНШОТОВ ===
     async def handle_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обрабатывает скриншоты через ИИ"""
+        """Обрабатывает скриншоты - просим прислать текст"""
         try:
-            print("📸 Получен новый скриншот")
-            await update.message.reply_text("🔄 Анализирую скриншот через ИИ...")
+            await update.message.reply_text(
+                "📸 **Скриншот получен!**\n\n"
+                "📝 **Пришли текст из скриншота сообщением** - я его проанализирую и создам заказ автоматически!\n\n"
+                "💡 *Просто выдели и скопируй текст из чата Kufar*"
+            )
             
-            photo_file = await update.message.photo[-1].get_file()
-            image_data = await photo_file.download_as_bytearray()
-            caption = update.message.caption or ""
+            # Помечаем что ждем текст от пользователя
+            context.user_data['awaiting_screenshot_text'] = True
             
-            print(f"📝 Подпись к фото: {caption}")
+        except Exception as e:
+            await update.message.reply_text("❌ Ошибка обработки фото")
+
+    # === АНАЛИЗ ТЕКСТА С OPENAI ===
+    async def analyze_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+        """Анализирует текстовые сообщения с данными заказа"""
+        try:
+            is_from_screenshot = context.user_data.get('awaiting_screenshot_text', False)
             
-            # Анализ скриншота через ИИ
-            result = await self.analyze_with_ai(bytes(image_data))
+            if is_from_screenshot:
+                del context.user_data['awaiting_screenshot_text']
+                await update.message.reply_text("🔄 Анализирую текст из скриншота через ИИ...")
+            else:
+                await update.message.reply_text("🔄 Анализирую текст через ИИ...")
             
-            print(f"🎯 Результат анализа: {result}")
+            # 🔥 ИСПОЛЬЗУЕМ OPENAI ДЛЯ АНАЛИЗА ТЕКСТА
+            parsed_data = await self.analyze_text_with_openai(text)
             
-            if result and self.validate_extracted_data(result):
-                print("✅ Анализ успешен, обрабатываю заказ...")
+            if parsed_data and self.validate_extracted_data(parsed_data):
+                await update.message.reply_text("✅ Данные распознаны! Создаю заказ...")
                 
-                # Обработка заказа
-                order_data = await self.process_order_data(result, caption)
-                
-                # Сохранение заказа
+                # Создаем заказ
+                order_data = await self.process_order_data(parsed_data, "")
                 order_saved = self.save_order_to_db(order_data)
                 
-                # Обновление баз
+                # Обновляем базы
                 self.update_products_db(order_data['Товар'], order_data['Сумма'])
                 self.update_customers_db(order_data)
                 
-                # Формирование ответа
                 response = self.format_order_response(order_data, order_saved)
                 await update.message.reply_text(response)
                 
             else:
-                print("❌ Анализ не удался")
-                await update.message.reply_text(
-                    "❌ Не удалось извлечь данные из скриншота.\n\n"
-                    "📝 **Отправь текст из скриншота вручную:**\n"
-                    "Просто скопируй и пришли текст из чата Kufar, я его проанализирую!"
-                )
-            
+                # Если ИИ не справился, пробуем обычный парсинг
+                parsed_data = self.parse_text_data(text)
+                
+                if self.validate_extracted_data(parsed_data):
+                    await update.message.reply_text("✅ Данные распознаны! Создаю заказ...")
+                    
+                    order_data = await self.process_order_data(parsed_data, "")
+                    order_saved = self.save_order_to_db(order_data)
+                    self.update_products_db(order_data['Товар'], order_data['Сумма'])
+                    self.update_customers_db(order_data)
+                    
+                    response = self.format_order_response(order_data, order_saved)
+                    await update.message.reply_text(response)
+                else:
+                    await update.message.reply_text(
+                        "❌ Не удалось распознать данные автоматически.\n\n"
+                        "📋 **Отправь данные вручную в формате:**\n"
+                        "```\n"
+                        "ФИО: Иванов Иван Иванович\n"
+                        "Телефон: +375291234567\n"
+                        "Адрес: г.Минск, ул.Ленина 1\n"
+                        "Товар: Подстаканник Golf 4\n"
+                        "Сумма: 35 р.\n"
+                        "```\n"
+                        "Или используй кнопку '✍️ Ручной ввод заказа' в меню"
+                    )
+                    
         except Exception as e:
-            print(f"💥 Ошибка обработки: {e}")
-            await update.message.reply_text(f"❌ Ошибка обработки: {str(e)}")
+            print(f"❌ Ошибка анализа текста: {e}")
+            await update.message.reply_text("❌ Ошибка анализа. Попробуй еще раз или используй ручной ввод.")
 
-    async def analyze_with_ai(self, image_data):
-        """Анализирует изображение через ИИ"""
+    async def analyze_text_with_openai(self, text):
+        """Анализирует текст через OpenAI"""
         if not self.hf_client:
             print("❌ HF клиент не настроен")
             return None
             
         try:
-            base64_image = base64.b64encode(image_data).decode('utf-8')
-            print("🖼️ Изображение закодировано в base64")
-            
-            prompt = """Analyze this Kufar chat screenshot and extract the following information:
-- Customer full name (ФИО)
-- Phone number 
-- Delivery address
-- Product name
-- Order amount
-- Username
+            prompt = f"""Проанализируй этот текст из чата Kufar и извлеки информацию:
 
-If some data is missing, write "null"
+{text}
 
-Return ONLY JSON format:
-{"name": "...", "phone": "...", "address": "...", "product": "...", "amount": "...", "username": "..."}"""
+Извлеки следующие данные:
+- ФИО клиента (полное имя)
+- Номер телефона
+- Адрес доставки  
+- Название товара
+- Сумма заказа
+- Никнейм (если есть)
 
-            # Пробуем модели которые поддерживают изображения
-            models_to_try = [
-                "llava-hf/llava-1.5-7b-hf",
-                "microsoft/DialoGPT-large", 
-                "HuggingFaceH4/zephyr-7b-beta"
-            ]
+Если какие-то данные отсутствуют, напиши "null".
+
+Верни ТОЛЬКО JSON формат:
+{{"name": "...", "phone": "...", "address": "...", "product": "...", "amount": "...", "username": "..."}}"""
+
+            completion = self.hf_client.chat.completions.create(
+                model="HuggingFaceH4/zephyr-7b-beta",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=1000,
+                temperature=0.1
+            )
             
-            for model in models_to_try:
-                try:
-                    print(f"🔄 Пробую модель: {model}")
-                    completion = self.hf_client.chat.completions.create(
-                        model=model,
-                        messages=[
-                            {
-                                "role": "user",
-                                "content": [
-                                    {"type": "text", "text": prompt},
-                                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
-                                ]
-                            }
-                        ],
-                        max_tokens=1000,
-                        temperature=0.1
-                    )
-                    
-                    response_text = completion.choices[0].message.content
-                    print(f"📨 Ответ от ИИ ({model}): {response_text}")
-                    
-                    # Парсим JSON из ответа
-                    json_match = re.search(r'\{[^}]+\}', response_text)
-                    if json_match:
-                        result = json.loads(json_match.group())
-                        print(f"✅ Успешно распарсено с моделью {model}")
-                        return result
-                        
-                except Exception as model_error:
-                    print(f"❌ Ошибка с моделью {model}: {model_error}")
-                    continue
+            response_text = completion.choices[0].message.content
+            print(f"📨 Ответ от ИИ: {response_text}")
             
-            print("❌ Все модели не сработали")
+            # Парсим JSON из ответа
+            json_match = re.search(r'\{[^}]+\}', response_text)
+            if json_match:
+                result = json.loads(json_match.group())
+                print(f"✅ Успешно распарсено")
+                return result
+                
             return None
                 
         except Exception as e:
@@ -246,9 +254,6 @@ Return ONLY JSON format:
         # Коррекция ошибок
         result = self.correct_common_errors(result)
         
-        # Определение цены (приоритет у подписи)
-        final_amount = self.extract_price_from_caption(caption) or result.get('amount', '')
-        
         # Создание данных заказа
         self.last_order_id += 1
         order_data = {
@@ -258,30 +263,17 @@ Return ONLY JSON format:
             'ФИО': result.get('name', ''),
             'Телефон': result.get('phone', ''),
             'Адрес': result.get('address', ''),
-            'Тип_доставки': self.detect_delivery_type(result, caption),
+            'Тип_доставки': self.detect_delivery_type(result, ""),
             'Товар': result.get('product', ''),
-            'Сумма': final_amount,
-            'Примечание': self.process_notes(caption, result),
+            'Сумма': result.get('amount', ''),
+            'Примечание': '',
             'Никнейм': result.get('username', ''),
             'Статус': 'Новый',
-            'Цена_из_подписи': 'Да' if self.extract_price_from_caption(caption) else 'Нет',
+            'Цена_из_подписи': 'Нет',
             'Трек_номер': ''
         }
         
         return order_data
-
-    def extract_price_from_caption(self, caption):
-        """Извлекает цену из подписи к фото"""
-        if not caption:
-            return None
-            
-        price_pattern = r'(\d+)[\s]*[рр]'
-        match = re.search(price_pattern, caption)
-        
-        if match:
-            return f"{match.group(1)} р."
-        
-        return None
 
     def correct_common_errors(self, extracted_data):
         """Исправляет частые ошибки распознавания в ФИО"""
@@ -330,17 +322,6 @@ Return ONLY JSON format:
         if 'почта' in full_text: 
             return "Белпочта"
         return "Не указан"
-
-    def process_notes(self, caption, result):
-        """Обрабатывает примечания"""
-        notes = []
-        if caption:
-            delivery_terms = ['бесплатно', 'за мой счет', 'отправка за мой счет']
-            for term in delivery_terms:
-                if term in caption.lower(): 
-                    notes.append(term)
-        
-        return '; '.join(notes) if notes else ''
 
     def save_order_to_db(self, order_data):
         """Сохраняет заказ в базу"""
@@ -464,7 +445,7 @@ Return ONLY JSON format:
 
     def format_order_response(self, order_data, order_saved):
         """Форматирует ответ о заказе"""
-        response = f"""✅ **ЗАКАЗ #{order_data['Номер_заказа']} СОЗДАН ИИ**
+        response = f"""✅ **ЗАКАЗ #{order_data['Номер_заказа']} СОЗДАН**
 
 👤 **ФИО:** {order_data['ФИО']}
 📞 **Телефон:** {order_data['Телефон']}
@@ -472,46 +453,12 @@ Return ONLY JSON format:
 🚚 **Доставка:** {order_data['Тип_доставки']}
 📦 **Товар:** {order_data['Товар']}
 💰 **Сумма:** {order_data['Сумма']}
-👥 **Никнейм:** {order_data['Никнейм']}
-📝 **Примечание:** {order_data['Примечание']}"""
+👥 **Никнейм:** {order_data['Никнейм']}"""
 
         if order_saved:
             response += f"\n\n💾 **Сохранено в базу**"
         
         return response
-
-    # === АНАЛИЗ ТЕКСТА ===
-    async def analyze_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
-        """Анализирует текстовые сообщения с данными заказа"""
-        print(f"📝 Анализирую текст: {text}")
-        
-        # Парсим текст
-        parsed_data = self.parse_text_data(text)
-        
-        print(f"🎯 Результат парсинга: {parsed_data}")
-        
-        if self.validate_extracted_data(parsed_data):
-            await update.message.reply_text("✅ Данные распознаны! Создаю заказ...")
-            
-            # Обработка заказа
-            order_data = await self.process_order_data(parsed_data, "")
-            
-            # Сохранение заказа
-            order_saved = self.save_order_to_db(order_data)
-            
-            # Обновление баз
-            self.update_products_db(order_data['Товар'], order_data['Сумма'])
-            self.update_customers_db(order_data)
-            
-            response = self.format_order_response(order_data, order_saved)
-            await update.message.reply_text(response)
-        else:
-            await update.message.reply_text(
-                "❌ Не удалось распознать данные в тексте.\n\n"
-                "📋 **Вот как правильно отправить данные:**\n"
-                "• Просто пришли текст из чата Kufar (я сам всё найду)\n"
-                "• Или используй формат для ручного ввода через меню"
-            )
 
     def parse_text_data(self, text):
         """Парсит текст и извлекает данные"""
@@ -684,7 +631,7 @@ Return ONLY JSON format:
 
             response = f"🔍 **НАЙДЕНО ЗАКАЗОВ:** {len(results)}\n\n"
             
-            for order in results[:10]:  # Ограничим вывод
+            for order in results[:10]:
                 response += f"""📦 **#{order['Номер_заказа']}** | {order['Дата_заказа']}
 👤 {order['ФИО']} | 📞 {order['Телефон']}
 📦 {order['Товар']} | 💰 {order['Сумма']}
@@ -707,7 +654,7 @@ Return ONLY JSON format:
                 
                 if products:
                     response = "📦 **ТОВАРЫ В НАЛИЧИИ:**\n\n"
-                    for product in products[:15]:  # Ограничим вывод
+                    for product in products[:15]:
                         response += f"• {product['Название']}: {product['Количество']} шт. ({product['Количество_продаж']} продаж)\n"
                     await update.callback_query.message.reply_text(response)
                 else:
@@ -774,7 +721,6 @@ Return ONLY JSON format:
                     stats['total_products'] = len(products)
                     
                     if products:
-                        # Сортируем по количеству продаж
                         sorted_products = sorted(products, key=lambda x: int(x['Количество_продаж']), reverse=True)
                         top_products = sorted_products[:3]
                         stats['top_products'] = '\n'.join(
@@ -814,8 +760,9 @@ Return ONLY JSON format:
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "🤖 **SKUFAR PARSER** запущен!\n\n"
-            "📸 Отправь скриншот чата Kufar для автоматического анализа\n"
-            "📝 Или просто пришли текст из чата - я его проанализирую!"
+            "📸 Отправь скриншот чата Kufar - я подскажу как извлечь текст\n"
+            "📝 Или просто пришли текст из чата - я его проанализирую!\n\n"
+            "💡 *Бот использует ИИ для автоматического распознавания данных*"
         )
         await self.show_main_menu(update, context)
 

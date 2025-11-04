@@ -784,6 +784,27 @@ def main():
     print("🔍 Ожидаю команды...")
     
     application.run_polling()
+# Для Render Web Service
+from flask import Flask
+import threading
 
+# Создаем простой HTTP-сервер для Render
+def create_web_server():
+    app = Flask(__name__)
+    
+    @app.route('/')
+    def home():
+        return "🤖 Kufar Bot is running!"
+    
+    @app.route('/health')
+    def health():
+        return "OK"
+    
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host='0.0.0.0', port=port)
+
+# Запускаем веб-сервер в отдельном потоке
+web_thread = threading.Thread(target=create_web_server, daemon=True)
+web_thread.start()
 if __name__ == "__main__":
     main()

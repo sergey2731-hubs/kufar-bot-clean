@@ -1,1 +1,1 @@
-web: python kufar_bot.py
+worker: python kufar_bot.py

@@ -1,0 +1,1 @@
+web: python kufar_bot.py
